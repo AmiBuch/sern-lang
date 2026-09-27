@@ -1,0 +1,52 @@
+// divergence.sern — the Dynamo paper's shopping-cart example, set in the lab.
+//
+// A network partition splits the replicas of a cart. Clients on each side
+// keep writing (W=1), so the two sides diverge. ECHELON never throws a
+// write away: after the partition heals, get() returns both "worldlines"
+// and the application merges them.
+
+labmem db = echelon.cluster({nodes: 3, n: 3, r: 1, w: 1, seed: 7})
+labmem key = "cart:okabe"
+
+db.put(key, ["Dr Pepper"])
+labmem before = db.get(key)
+print("cart:", before.worldlines[0], "| context", before.context)
+
+// Split the cluster: node-1 alone on one side, node-2 and node-3 on the other.
+db.partition(["node-1"], ["node-2", "node-3"])
+labmem alpha = db.via("node-1")   // a client that can only reach node-1
+labmem beta  = db.via("node-2")   // a client on the other side
+
+// Both clients start from the same context and add different items.
+labmem wa = alpha.put(key, ["Dr Pepper", "Banana"], before.context)
+labmem wb = beta.put(key, ["Dr Pepper", "Upa plushie"], before.context)
+print("alpha wrote on", wa.replicas, "with", wa.context)
+print("beta  wrote on", wb.replicas, "with", wb.context)
+
+// Neither clock descends from the other: the worldlines have diverged.
+print("alpha sees:", alpha.get(key).worldlines)
+print("beta  sees:", beta.get(key).worldlines)
+
+db.heal()
+db.antientropy()   // Merkle trees find the difference and copy both versions
+
+labmem r = db.get(key)
+print("after heal -> conflict:", r.conflict, "| worldlines:", r.worldlines)
+print("merged context:", r.context)
+
+// Semantic reconciliation: the application knows a cart merge is a union.
+operation union(carts) {
+    labmem out = []
+    reading cart in carts {
+        reading item in cart {
+            if !contains(out, item) { push(out, item) }
+        }
+    }
+    kongroo sort(out)
+}
+
+// Writing with the merged context supersedes both siblings.
+db.put(key, union(r.worldlines), r.context)
+labmem final = db.get(key)
+print("after merge:", final.worldlines, "| conflict:", final.conflict, "| context", final.context)
+print("El Psy Kongroo.")

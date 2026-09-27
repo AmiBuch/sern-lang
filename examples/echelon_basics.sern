@@ -1,0 +1,40 @@
+// echelon_basics.sern — a first look at ECHELON, the Dynamo store built into Sern.
+//
+// Five nodes, every key replicated on N=3 of them; a read needs R=2
+// answers and a write needs W=2 acknowledgements (R + W > N).
+
+labmem db = echelon.cluster({nodes: 5, n: 3, r: 2, w: 2, vnodes: 16, seed: 42})
+print(db)
+
+// Consistent hashing: each node owns 16 virtual nodes on the ring, which
+// evens out how much of the key space each one is responsible for.
+print("share of the ring each node coordinates:", db.ownership())
+
+// The preference list: the N nodes found walking clockwise from the key.
+labmem key = "lab-mem-004"
+print("preference list for", key, "=", db.preference(key))
+
+// Write, then read back. get() returns every concurrent version (the
+// "worldlines") plus a context: the vector clock of what you read.
+labmem w = db.put(key, {name: "Makise Kurisu", alias: "Christina"})
+print("put: ok =", w.ok, "| coordinator:", w.coordinator, "| stored on", w.replicas)
+
+labmem r = db.get(key)
+print("get:", r.worldlines, "| context:", r.context)
+
+// Update by passing the context back: the new version descends from the
+// old one, so the old one is discarded rather than kept as a sibling.
+labmem updated = r.worldlines[0]
+updated.alias = "The Zombie"
+w = db.put(key, updated, r.context)
+print("after update:", db.get(key).worldlines, "| context:", w.context)
+
+// Every replica holds exactly one version now.
+reading node in db.preference(key) {
+    labmem local = db.inspect(node, key)
+    print(fmt("  {} holds {} version(s): {}", node, len(local.versions), local.versions[0].context))
+}
+
+// Deletes are writes too: a tombstone that supersedes what it deletes.
+db.delete(key, db.get(key).context)
+print("after delete: found =", db.get(key).found)

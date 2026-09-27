@@ -1,0 +1,52 @@
+// lab_members.sern — lists, maps, reading loops, closures and higher-order
+// operations, using the members of the Future Gadget Lab.
+
+labmem members = [
+    {id: 1, name: "Okabe Rintaro",   alias: "Hououin Kyouma"},
+    {id: 2, name: "Shiina Mayuri",   alias: "Mayushii"},
+    {id: 3, name: "Hashida Itaru",   alias: "Daru"},
+    {id: 4, name: "Makise Kurisu",   alias: "Christina"},
+    {id: 5, name: "Kiryu Moeka",     alias: "Shining Finger"},
+]
+
+operation badge(m) {
+    kongroo fmt("Lab Mem {}: {} ({})", pad(str(m.id), 3), pad(m.name, 15), m.alias)
+}
+
+// Operations are values: pass them around, store them, return them.
+operation byField(field) {
+    kongroo operation(a, b) { kongroo a[field] < b[field] }
+}
+
+operation main() {
+    reading m in members {
+        print(badge(m))
+    }
+
+    print()
+    labmem names = map(members, operation(m) { kongroo m.alias })
+    print("aliases, sorted:", sort(names))
+    print("sorted by name:", map(sort(members, byField("name")), operation(m) { kongroo m.id }))
+
+    // reading i, x binds index and element (or key and value for maps).
+    labmem gadgets = {"Phone Microwave (name subject to change)": 8, "Bit Particle Cannon": 3, "Moad Snake": 1}
+    labmem total = 0
+    reading name, number in gadgets {
+        print(fmt("  Future Gadget #{}: {}", number, name))
+        total += number
+    }
+    print("sum of gadget numbers:", total)
+
+    // A counter per member, each closure keeping its own state.
+    labmem counters = {}
+    reading m in members {
+        labmem hits = 0
+        counters[m.alias] = operation() {
+            hits += 1
+            kongroo hits
+        }
+    }
+    counters["Mayushii"]()
+    counters["Mayushii"]()
+    print("Mayushii said tuturu", counters["Mayushii"](), "times; Daru said it", counters["Daru"](), "time")
+}

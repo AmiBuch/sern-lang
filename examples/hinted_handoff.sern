@@ -1,0 +1,31 @@
+// hinted_handoff.sern — sloppy quorum and hinted handoff (§4.6).
+//
+// When a replica is down, the write goes to the next healthy node on the
+// ring instead, tagged with a hint naming the real owner. When the owner
+// comes back, the stand-in hands the data over and deletes its copy.
+
+labmem db = echelon.cluster({nodes: 5, n: 3, r: 2, w: 3, seed: 3})
+labmem key = "dmail:1975"
+labmem pref = db.preference(key)
+print("replicas for", key, "=", pref)
+
+labmem victim = pref[2]
+db.crash(victim)
+print("crashed", victim)
+
+// W=3 still succeeds: a stand-in accepts the third copy.
+labmem w = db.put(key, "Don't tell Okabe about the IBN 5100")
+print("put ok:", w.ok, "| acks:", w.acks, "| stored on:", w.replicas, "| hinted:", w.hinted)
+
+reading standin, owner in w.hinted {
+    print(fmt("{} holds a hint for {}: {}", standin, owner, db.inspect(standin, key).hints))
+}
+print(victim, "has", len(db.inspect(victim, key).versions), "version(s) while down")
+
+db.revive(victim)
+labmem h = db.handoff()
+print("handoff delivered", h.delivered, "hint(s), pending", h.pending)
+print(victim, "now has", len(db.inspect(victim, key).versions), "version(s)")
+reading standin in keys(w.hinted) {
+    print(standin, "still holding hints:", len(db.inspect(standin, key).hints))
+}

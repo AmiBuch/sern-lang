@@ -1,0 +1,46 @@
+// anti_entropy.sern — Merkle-tree replica synchronization (§4.7).
+//
+// A node's disk is wiped. Hinted handoff can't help (nothing was written
+// while it was down), so anti-entropy compares Merkle trees with the other
+// replicas and copies back only what differs.
+
+labmem db = echelon.cluster({nodes: 5, n: 3, seed: 11, merkle_depth: 4})
+
+reading i in range(200) {
+    db.put("worldline-" + i, {attractor: i % 2 == 0, divergence: i})
+}
+
+operation keycounts() {
+    kongroo map(db.nodes(), operation(n) { kongroo n.id + ":" + n.keys })
+}
+
+print("keys per node:      ", keycounts())
+db.wipe("node-3")
+print("after wiping node-3:", keycounts())
+
+labmem st = db.antientropy()
+print("anti-entropy:", st)
+print("after repair:       ", keycounts())
+
+// Once in sync, a pass costs one root hash per replica pair.
+labmem again = db.antientropy()
+print(fmt("second pass: {} pairs, {} in sync, {} hashes, {} keys sent",
+    again.pairs_checked, again.in_sync, again.hashes_sent, again.keys_sent))
+
+// Now make just one key diverge: isolate its first replica and write there.
+labmem k = "worldline-42"
+labmem pref = db.preference(k)
+labmem owner = pref[0]
+labmem others = filter(map(db.nodes(), operation(n) { kongroo n.id }), operation(n) { kongroo n != owner })
+db.partition([owner], others)
+labmem w = db.via(owner).put(k, "rewritten on an isolated replica", db.get(k).context)
+// W=2 can't be met (only the owner acknowledged), so the client is told the
+// write failed. But the owner did store it. Dynamo gives no rollback.
+print(fmt("isolated write: ok={} acks={} error={}", w.ok, w.acks, w.error))
+db.heal()
+
+labmem one = db.antientropy()
+print(fmt("one changed key: {} leaves differed, {} hashes, {} keys sent", one.leaves_differed, one.hashes_sent, one.keys_sent))
+reading n in pref {
+    print(" ", n, "->", db.inspect(n, k).versions[0].value)
+}

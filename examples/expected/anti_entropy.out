@@ -1,0 +1,10 @@
+keys per node:       ["node-1:138", "node-2:153", "node-3:74", "node-4:78", "node-5:157"]
+after wiping node-3: ["node-1:138", "node-2:153", "node-3:0", "node-4:78", "node-5:157"]
+anti-entropy: {"pairs_checked": 120, "in_sync": 107, "repaired": 13, "unreachable": 0, "leaves_differed": 57, "hashes_sent": 360, "keys_sent": 74}
+after repair:        ["node-1:138", "node-2:153", "node-3:74", "node-4:78", "node-5:157"]
+second pass: 120 pairs, 120 in sync, 120 hashes, 0 keys sent
+isolated write: ok=false acks=1 error=put failed: needed 2 replicas, only 1 answered
+one changed key: 2 leaves differed, 136 hashes, 4 keys sent
+  node-2 -> rewritten on an isolated replica
+  node-4 -> rewritten on an isolated replica
+  node-3 -> rewritten on an isolated replica

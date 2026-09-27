@@ -1,0 +1,8 @@
+// hello.sern — the first transmission.
+//
+//   ibn-5100 run examples/hello.sern
+
+operation main() {
+    print("Tuturu~ ♪  This is Sern, running on worldline", divergence())
+    print("El Psy Kongroo.")
+}

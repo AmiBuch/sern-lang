@@ -1,0 +1,25 @@
+// ring_balance.sern — consistent hashing experiments (§4.2).
+//
+// 1. More virtual nodes → a more even share of the ring per machine.
+// 2. Adding a machine moves only ~1/N of the keys, unlike hash(key) % N.
+
+reading v in [1, 8, 64, 256] {
+    labmem db = echelon.cluster({nodes: 5, vnodes: v, seed: 1})
+    labmem shares = values(db.ownership())
+    print(fmt("vnodes={}  smallest share={}  largest share={}", pad(v, 4), pad(min(shares), 5), max(shares)))
+}
+
+labmem db = echelon.cluster({nodes: 5, vnodes: 64, seed: 1})
+labmem keys_ = map(range(1000), operation(i) { kongroo "key-" + i })
+
+labmem before = {}
+reading k in keys_ { before[k] = db.preference(k)[0] }
+db.join("node-6")
+db.gossip(10)
+labmem moved = len(filter(keys_, operation(k) { kongroo db.preference(k)[0] != before[k] }))
+print("consistent hashing: adding node-6 moved", moved, "of 1000 keys")
+
+// The naive alternative: node = hash(key) % N. We use the key's number as
+// its "hash"; any hash function gives the same proportion.
+labmem naive = len(filter(range(1000), operation(i) { kongroo i % 5 != i % 6 }))
+print("hash % N:           going from 5 to 6 nodes moves", naive, "of 1000 keys")

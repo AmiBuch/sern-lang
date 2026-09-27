@@ -1,0 +1,6 @@
+bin/
+*.sernbc
+*.test
+*.out
+!examples/expected/*.out
+docs/

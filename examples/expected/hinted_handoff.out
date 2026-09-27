@@ -1,0 +1,8 @@
+replicas for dmail:1975 = ["node-5", "node-3", "node-2"]
+crashed node-2
+put ok: true | acks: 3 | stored on: ["node-3", "node-5"] | hinted: {"node-1": "node-2"}
+node-1 holds a hint for node-2: {"node-2": [{"value": "Don't tell Okabe about the IBN 5100", "context": <context {node-5:1}>, "deleted": false}]}
+node-2 has 0 version(s) while down
+handoff delivered 1 hint(s), pending 0
+node-2 now has 1 version(s)
+node-1 still holding hints: 0

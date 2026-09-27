@@ -1,0 +1,6 @@
+vnodes=1     smallest share=0.023  largest share=0.704
+vnodes=8     smallest share=0.12   largest share=0.373
+vnodes=64    smallest share=0.175  largest share=0.24
+vnodes=256   smallest share=0.184  largest share=0.207
+consistent hashing: adding node-6 moved 174 of 1000 keys
+hash % N:           going from 5 to 6 nodes moves 830 of 1000 keys

@@ -1,0 +1,24 @@
+// gossip.sern — membership changes spread by gossip (§4.8, §4.9).
+
+labmem db = echelon.cluster({nodes: 5, vnodes: 32, seed: 5})
+
+operation views() {
+    kongroo map(db.nodes(), operation(n) { kongroo n.id + "=" + n.members })
+}
+
+reading i in range(50) { db.put("key-" + i, i) }
+
+db.join("node-6")
+print("round 0:", views())
+labmem round = 1
+timeleap round <= 6 {
+    db.gossip(1)
+    print(fmt("round {}: {}", round, views()))
+    round += 1
+}
+
+// node-6 now owns part of the ring; anti-entropy fills it in.
+print("node-6 keys before anti-entropy:", len(db.keys("node-6")))
+db.antientropy()
+print("node-6 keys after anti-entropy: ", len(db.keys("node-6")))
+print("ring share:", db.ownership())

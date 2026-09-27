@@ -1,0 +1,26 @@
+// fib.sern — recursion vs. a timeleap loop.
+
+operation fib_recursive(n) {
+    if n < 2 { kongroo n }
+    kongroo fib_recursive(n - 1) + fib_recursive(n - 2)
+}
+
+operation fib_loop(n) {
+    labmem a = 0
+    labmem b = 1
+    timeleap n > 0 {
+        labmem next = a + b
+        a = b
+        b = next
+        n -= 1
+    }
+    kongroo a
+}
+
+operation main() {
+    reading n in [0, 1, 2, 10, 25] {
+        assert(fib_recursive(n) == fib_loop(n), "the worldlines disagree")
+        print(fmt("fib({}) = {}", n, fib_loop(n)))
+    }
+    print("fib(90) =", fib_loop(90))
+}

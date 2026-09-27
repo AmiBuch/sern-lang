@@ -1,0 +1,10 @@
+<echelon cluster nodes=5 N=3 R=2 W=2>
+share of the ring each node coordinates: {"node-1": 0.131, "node-2": 0.206, "node-3": 0.24, "node-4": 0.208, "node-5": 0.216}
+preference list for lab-mem-004 = ["node-3", "node-5", "node-1"]
+put: ok = true | coordinator: node-1 | stored on ["node-1", "node-3", "node-5"]
+get: [{"name": "Makise Kurisu", "alias": "Christina"}] | context: <context {node-1:1}>
+after update: [{"name": "Makise Kurisu", "alias": "The Zombie"}] | context: <context {node-1:1, node-3:1}>
+  node-3 holds 1 version(s): <context {node-1:1, node-3:1}>
+  node-5 holds 1 version(s): <context {node-1:1, node-3:1}>
+  node-1 holds 1 version(s): <context {node-1:1, node-3:1}>
+after delete: found = false

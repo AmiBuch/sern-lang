@@ -1,0 +1,9 @@
+cart: ["Dr Pepper"] | context <context {node-3:1}>
+alpha wrote on ["node-1"] with <context {node-1:1, node-3:1}>
+beta  wrote on ["node-2", "node-3"] with <context {node-2:1, node-3:1}>
+alpha sees: [["Dr Pepper", "Banana"]]
+beta  sees: [["Dr Pepper", "Upa plushie"]]
+after heal -> conflict: true | worldlines: [["Dr Pepper", "Banana"], ["Dr Pepper", "Upa plushie"]]
+merged context: <context {node-1:1, node-2:1, node-3:1}>
+after merge: [["Banana", "Dr Pepper", "Upa plushie"]] | conflict: false | context <context {node-1:2, node-2:1, node-3:1}>
+El Psy Kongroo.
