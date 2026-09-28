@@ -21,8 +21,43 @@ operation trial(n, r, w) {
     kongroo fmt("N={} R={} W={}  R+W>N: {}  stale reads: {}/{}", n, r, w, pad(r + w > n, 5), stale, rounds)
 }
 
+// The same measurement, but every replica of the key is down at the moment
+// of the write, so the W acks come from hinted stand-ins further round the
+// ring. That is a *sloppy* quorum, and the Dynamo paper is explicit that a
+// sloppy quorum is not a strict one: R + W > N stops meaning anything,
+// because the read quorum and the write quorum are no longer drawn from the
+// same N nodes. Rounds whose write never reached W are not counted.
+operation trial_under_failure(n, r, w) {
+    labmem db = echelon.cluster({nodes: 5, n: n, r: r, w: w, sync: false, latency: [0.05, 2], seed: 9})
+    labmem stale = 0
+    labmem wrote = 0
+    labmem rounds = 150
+    labmem key = "counter"
+    reading i in range(rounds) {
+        labmem before = db.get(key)
+        labmem pref = db.preference(key)
+        reading id in pref { db.crash(id) }   // every real replica is down
+        labmem res = db.put(key, i, before.context)
+        reading id in pref { db.revive(id) }  // they come back still holding the old value
+        if res.ok {
+            wrote += 1
+            labmem after = db.get(key)
+            if !contains(after.worldlines, i) { stale += 1 }
+        }
+    }
+    db.settle()
+    kongroo fmt("N={} R={} W={}  R+W>N: {}  stale reads: {}/{}", n, r, w, pad(r + w > n, 5), stale, wrote)
+}
+
+print("no failures:")
 print(trial(3, 1, 1))
 print(trial(3, 1, 2))
 print(trial(3, 2, 2))
 print(trial(3, 1, 3))
 print(trial(3, 3, 1))
+
+print("")
+print("replicas down at write time (sloppy quorum):")
+print(trial_under_failure(3, 1, 2))
+print(trial_under_failure(3, 2, 2))
+print(trial_under_failure(3, 3, 1))

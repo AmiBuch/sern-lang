@@ -237,7 +237,7 @@ func versionsList(vs []echelon.Version) (object.Value, error) {
 			}
 			m.SetStr("value", val)
 		}
-		m.SetStr("context", contextVal(v.Clock))
+		m.SetStr("context", contextVal(v.FullClock()))
 		m.SetStr("deleted", object.Bool(v.Deleted))
 		out = append(out, object.MapVal(m))
 	}

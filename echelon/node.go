@@ -41,7 +41,10 @@ func (n *Node) nextCounter(key string, fromContext uint64) uint64 {
 	defer n.mu.Unlock()
 	next := max(fromContext, n.issued[key])
 	for _, v := range n.data[key] {
-		next = max(next, v.Clock.Get(n.ID))
+		if v.Dot.Node == n.ID {
+			next = max(next, v.Dot.Counter)
+		}
+		next = max(next, v.Context.Get(n.ID))
 	}
 	next++
 	n.issued[key] = next

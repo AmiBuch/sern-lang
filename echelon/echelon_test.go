@@ -50,9 +50,10 @@ func TestVClockTruncate(t *testing.T) {
 }
 
 func TestReconcileDropsAncestors(t *testing.T) {
-	a := Version{Value: []byte("a"), Clock: VClock(nil).Increment("x", 1)}
-	b := Version{Value: []byte("b"), Clock: a.Clock.Increment("x", 2)}
-	c := Version{Value: []byte("c"), Clock: a.Clock.Increment("y", 3)}
+	// b and c both descend from a, and from nothing of each other's.
+	a := Version{Value: []byte("a"), Dot: ClockEntry{Node: "x", Counter: 1}}
+	b := Version{Value: []byte("b"), Dot: ClockEntry{Node: "x", Counter: 2}, Context: a.FullClock()}
+	c := Version{Value: []byte("c"), Dot: ClockEntry{Node: "y", Counter: 1}, Context: a.FullClock()}
 	got := Reconcile([]Version{a, b, c, b})
 	if len(got) != 2 {
 		t.Fatalf("want 2 concurrent siblings, got %d", len(got))
@@ -110,24 +111,130 @@ func TestPutGet(t *testing.T) {
 	}
 }
 
+// Two clients writing from the same context must both survive even when the
+// *same* node coordinates both writes. Pinning via to a node in the key's
+// preference list makes that node coordinate, so this is the bad case on
+// purpose rather than by luck.
 func TestConcurrentWritesCreateSiblings(t *testing.T) {
 	c := mustCluster(t, nil)
+	pl, err := c.PreferenceList("cart")
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.Put("cart", nil, []byte("banana"))
 	r, _ := c.Get("cart")
-	// Two clients update from the same context: neither descends from the other.
-	c.Put("cart", r.Context, []byte("banana+upa"))
-	c.Put("cart", r.Context, []byte("banana+metal-upa"))
-	r2, _ := c.Get("cart")
-	if len(r2.Siblings) < 1 {
-		t.Fatal("lost writes")
+
+	wa, err := c.PutVia(pl[0], "cart", r.Context, []byte("banana+upa"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Siblings only appear if the two writes had different coordinators.
-	if len(r2.Siblings) == 2 {
-		// A write with the merged context resolves the conflict.
-		c.Put("cart", r2.Context, []byte("merged"))
-		r3, _ := c.Get("cart")
-		if len(r3.Siblings) != 1 || string(r3.Siblings[0].Value) != "merged" {
-			t.Fatalf("merge write did not supersede siblings: %d", len(r3.Siblings))
+	wb, err := c.PutVia(pl[0], "cart", r.Context, []byte("banana+metal-upa"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Guard the premise: without one shared coordinator this proves nothing.
+	if wa.Coordinator != pl[0] || wb.Coordinator != pl[0] {
+		t.Fatalf("wanted both writes coordinated by %s, got %s and %s", pl[0], wa.Coordinator, wb.Coordinator)
+	}
+
+	r2, _ := c.Get("cart")
+	if len(r2.Siblings) != 2 {
+		t.Fatalf("want 2 siblings from one coordinator, got %d", len(r2.Siblings))
+	}
+	got := map[string]bool{}
+	for _, v := range r2.Siblings {
+		got[string(v.Value)] = true
+	}
+	if !got["banana+upa"] || !got["banana+metal-upa"] {
+		t.Fatalf("wrong siblings survived: %v", got)
+	}
+	if got["banana"] {
+		t.Fatal("the superseded original is still a sibling")
+	}
+
+	// A write with the merged context resolves the conflict.
+	c.Put("cart", r2.Context, []byte("merged"))
+	r3, _ := c.Get("cart")
+	if len(r3.Siblings) != 1 || string(r3.Siblings[0].Value) != "merged" {
+		t.Fatalf("merge write did not supersede siblings: %d", len(r3.Siblings))
+	}
+}
+
+// The reviewer's repro: 300 independent keys, ordinary random routing. Before
+// dotted version vectors this lost a write roughly 143 times.
+func TestNoLostWritesUnderRandomRouting(t *testing.T) {
+	c := mustCluster(t, nil)
+	lost, sameCoord := 0, 0
+	for i := 0; i < 300; i++ {
+		key := fmt.Sprintf("cart-%d", i)
+		if _, err := c.Put(key, nil, []byte("v0")); err != nil {
+			t.Fatal(err)
+		}
+		r, err := c.Get(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wa, err := c.Put(key, r.Context, []byte("a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wb, err := c.Put(key, r.Context, []byte("b"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wa.Coordinator == wb.Coordinator {
+			sameCoord++
+		}
+		r2, err := c.Get(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(r2.Siblings) != 2 {
+			lost++
+		}
+	}
+	if lost != 0 {
+		t.Fatalf("%d/300 concurrent write pairs lost a version", lost)
+	}
+	// If routing ever stops colliding, this test silently stops testing
+	// anything. Expect ~132/300 collisions at 5 nodes with N=3.
+	if sameCoord < 50 {
+		t.Fatalf("only %d/300 pairs shared a coordinator; the test no longer exercises the bug", sameCoord)
+	}
+}
+
+// Truncating a context can only uncover a dot, costing an extra sibling. It
+// must never drop a write or leave a version whose dot its own clock omits.
+func TestTruncatedContextNeverLosesWrites(t *testing.T) {
+	c := mustCluster(t, func(cfg *Config) { cfg.ClockLimit = 2 })
+	pl, err := c.PreferenceList("k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Put("k", nil, []byte("v0"))
+	for i := 0; i < 6; i++ {
+		r, err := c.Get("k")
+		if err != nil {
+			t.Fatal(err)
+		}
+		via := pl[i%len(pl)]
+		if _, err := c.PutVia(via, "k", r.Context, []byte(fmt.Sprintf("v%d", i+1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := c.Get("k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Siblings) == 0 {
+		t.Fatal("truncation dropped every version")
+	}
+	for _, v := range r.Siblings {
+		if v.Dot.Counter == 0 {
+			t.Fatalf("version %q has no dot", v.Value)
+		}
+		if v.FullClock().Get(v.Dot.Node) != v.Dot.Counter {
+			t.Fatalf("version %q: dot %v missing from its own clock %v", v.Value, v.Dot, v.FullClock())
 		}
 	}
 }

@@ -1,0 +1,21 @@
+// groceries.sern — the shortest demonstration that ECHELON keeps both writes.
+//
+// Okabe and Mayuri both start from the same context and add a different item
+// to the lab's grocery list, on opposite sides of a network partition. Nothing
+// is overwritten: after the partition heals, get() hands back both worldlines
+// and the application decides what really happened.
+
+labmem db = echelon.cluster({nodes: 3, n: 3, r: 1, w: 1})
+db.put("lab-groceries", ["Dr Pepper"])
+labmem ctx = db.get("lab-groceries").context
+
+db.partition(["node-1"], ["node-2", "node-3"])   // the network splits in two
+labmem okabe  = db.via("node-1")                 // Okabe can only reach node-1
+labmem mayuri = db.via("node-2")                 // Mayuri is stuck on the other side
+
+okabe.put("lab-groceries", ["Dr Pepper", "Banana"], ctx)
+mayuri.put("lab-groceries", ["Dr Pepper", "Upa plushie"], ctx)
+
+db.heal()
+db.antientropy()
+print(db.get("lab-groceries").worldlines)

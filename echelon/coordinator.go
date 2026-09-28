@@ -123,14 +123,13 @@ func (c *Cluster) write(key string, ctx VClock, value []byte, deleted bool, via 
 	if err != nil {
 		return WriteResult{Key: key}, err
 	}
-	// The coordinator stamps the new version by advancing its own entry in
-	// the client's context clock, past any counter it has already issued
-	// for this key so that two versions never share a clock. If the same
-	// coordinator handles two writes made from the same context, the later
-	// one descends from the earlier and silently wins: a known weakness of
-	// per-node vector clocks (dotted version vectors fix it).
-	clock := ctx.WithCounter(coord.ID, coord.nextCounter(key, ctx.Get(coord.ID)), c.stamp.Add(1)).Truncate(c.cfg.ClockLimit)
-	ver := Version{Value: value, Clock: clock, Deleted: deleted}
+	// The coordinator stamps the new version with a dot: its own id plus a
+	// counter one past anything it has issued for this key, so no two writes
+	// ever share one. The dot is kept beside the client's context rather than
+	// folded into it, which is what lets two writes made from the same context
+	// through this same coordinator survive as siblings.
+	dot := ClockEntry{Node: coord.ID, Counter: coord.nextCounter(key, ctx.Get(coord.ID)), Stamp: c.stamp.Add(1)}
+	ver := Version{Value: value, Dot: dot, Context: ctx.Truncate(c.cfg.ClockLimit), Deleted: deleted}
 	n := min(c.cfg.N, len(walk))
 	top, fallbacks := walk[:n], walk[n:]
 
@@ -174,7 +173,7 @@ func (c *Cluster) write(key string, ctx VClock, value []byte, deleted bool, via 
 		}
 	}()
 
-	res := WriteResult{Key: key, Coordinator: coord.ID, Clock: clock, Preference: append([]string(nil), top...), Hints: map[string]string{}}
+	res := WriteResult{Key: key, Coordinator: coord.ID, Clock: ver.FullClock(), Preference: append([]string(nil), top...), Hints: map[string]string{}}
 	for a := range acks {
 		res.Acks++
 		if a.hintFor != "" {
@@ -281,7 +280,7 @@ func (c *Cluster) GetVia(via, key string) (ReadResult, error) {
 	}
 	versions := Reconcile(all)
 	for _, v := range versions {
-		res.Context = Merge(res.Context, v.Clock)
+		res.Context = Merge(res.Context, v.FullClock())
 		if !v.Deleted {
 			res.Siblings = append(res.Siblings, v)
 		}
