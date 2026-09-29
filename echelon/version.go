@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"sort"
+	"strconv"
 )
 
 // Version is one stored version of a key: an opaque value, the dot that
@@ -17,30 +18,32 @@ import (
 // through the same coordinator come out strictly ordered and the older one is
 // silently dropped. Keeping the dot separate means neither write's context
 // covers the other's dot, so both survive as siblings.
+//
+// The context is a Context, not a VClock, for the second half of the same
+// problem: a vector clock cannot record "I saw node-3:2 but not node-3:1", so
+// flattening a client's view into one would have it claim writes it never saw.
+// See Context and docs/09.
 type Version struct {
 	Value   []byte
 	Dot     ClockEntry // uniquely identifies this write
-	Context VClock     // what this write descended from; excludes Dot
+	Context Context    // what this write descended from; excludes Dot
 	Deleted bool
 }
 
-// FullClock is the version's complete causal history: its context plus its
+// FullContext is the version's complete causal history: its context plus its
 // own dot. This is what clients see and hand back on the next put.
-func (v Version) FullClock() VClock {
-	if v.Dot.Counter == 0 {
-		return v.Context
-	}
-	return Merge(v.Context, VClock{v.Dot})
+func (v Version) FullContext() Context {
+	return v.Context.Add(v.Dot)
 }
 
 // dominates reports whether a was written in knowledge of b, i.e. whether
-// a's causal context already covers b's dot. This is the whole of the DVV
+// a's causal context already contains b's dot. This is the whole of the DVV
 // ordering: everything else follows from it.
 //
 // A version with no dot is never dominated. Hand-built versions and anything
 // predating dots therefore show up as an extra sibling rather than vanishing.
 func dominates(a, b Version) bool {
-	return b.Dot.Counter > 0 && a.Context.Get(b.Dot.Node) >= b.Dot.Counter
+	return b.Dot.Counter > 0 && a.Context.Covers(b.Dot)
 }
 
 // Reconcile performs Dynamo's *syntactic* reconciliation: any version whose
@@ -48,20 +51,18 @@ func dominates(a, b Version) bool {
 // same write are collapsed. What remains is a set of mutually concurrent
 // siblings. Semantic reconciliation (merging siblings) is left to the
 // application.
+//
+// Domination cannot cycle, so this never empties a non-empty set: a dot is
+// minted strictly after the context it is paired with, so two versions cannot
+// each have seen the other.
 func Reconcile(vs []Version) []Version {
+	vs = coalesce(vs)
 	var out []Version
 	for i, v := range vs {
 		dominated := false
 		for j, w := range vs {
-			if i == j {
-				continue
-			}
-			if dominates(w, v) {
+			if i != j && dominates(w, v) {
 				dominated = true
-			} else if w.Dot.Counter > 0 && w.Dot == v.Dot && j < i {
-				dominated = true // the same write, seen twice
-			}
-			if dominated {
 				break
 			}
 		}
@@ -73,11 +74,50 @@ func Reconcile(vs []Version) []Version {
 	return out
 }
 
+// coalesce collapses repeats of the same write into one version whose context
+// is the union of the copies' contexts.
+//
+// Two replicas can hold one write with different contexts, once ClockLimit
+// truncation has run on one of them and not the other. Picking a copy by its
+// position in the slice would then make Reconcile's result depend on argument
+// order: two replicas would reconcile identical inputs to different sets,
+// digest would disagree, and anti-entropy would repair them at each other
+// forever. Merging is order-independent, and keeps the better-informed context.
+func coalesce(vs []Version) []Version {
+	out := make([]Version, 0, len(vs))
+	at := make(map[string]int, len(vs))
+	for _, v := range vs {
+		k := v.identity()
+		if i, seen := at[k]; seen {
+			out[i].Context = MergeContexts(out[i].Context, v.Context)
+			if v.Dot.Stamp > out[i].Dot.Stamp {
+				out[i].Dot.Stamp = v.Dot.Stamp
+			}
+			continue
+		}
+		at[k] = len(out)
+		out = append(out, v)
+	}
+	return out
+}
+
+// identity names the write a version came from. A dot is unique per write per
+// key, so it is the whole identity; Stamp is excluded because it is only a
+// truncation hint and two copies of one write may carry different ones.
+// Dotless versions fall back to their contents, which at least collapses exact
+// duplicates.
+func (v Version) identity() string {
+	if v.Dot.Counter > 0 {
+		return "d\x00" + v.Dot.Node + "\x00" + strconv.FormatUint(v.Dot.Counter, 10)
+	}
+	return "v\x00" + string(v.Value) + "\x00" + strconv.FormatBool(v.Deleted) + "\x00" + v.Context.String()
+}
+
 // sortVersions gives siblings a deterministic order. Siblings from one
 // coordinator share a context, so the dot breaks the tie.
 func sortVersions(vs []Version) {
 	sort.Slice(vs, func(i, j int) bool {
-		li, lj := vs[i].FullClock().String(), vs[j].FullClock().String()
+		li, lj := vs[i].FullContext().String(), vs[j].FullContext().String()
 		if li != lj {
 			return li < lj
 		}
@@ -103,9 +143,18 @@ func digest(vs []Version) [32]byte {
 		h.Write([]byte(v.Dot.Node))
 		binary.BigEndian.PutUint64(tmp[:], v.Dot.Counter)
 		h.Write(tmp[:])
-		for _, e := range v.Context {
+		for _, e := range v.Context.Clock {
 			h.Write([]byte(e.Node))
 			binary.BigEndian.PutUint64(tmp[:], e.Counter)
+			h.Write(tmp[:])
+		}
+		// A separator before the loose dots, so "node-3 up to 2" and "node-3:2
+		// past a gap" cannot hash alike. They are different states, and two
+		// replicas holding one each must not look in sync.
+		h.Write([]byte{0xff})
+		for _, d := range v.Context.Dots {
+			h.Write([]byte(d.Node))
+			binary.BigEndian.PutUint64(tmp[:], d.Counter)
 			h.Write(tmp[:])
 		}
 		if v.Deleted {

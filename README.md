@@ -109,7 +109,7 @@ Available Key-value Store* (DeCandia et al., SOSP 2007):
 | Mechanism | Paper | Code |
 |---|---|---|
 | Consistent hashing with virtual nodes, preference lists | §4.2–4.3 | `echelon/ring.go` |
-| Vector clocks, syntactic reconciliation, siblings | §4.4 | `echelon/vclock.go`, `version.go` |
+| Vector clocks, syntactic reconciliation, siblings | §4.4 | `echelon/vclock.go`, `context.go`, `version.go` |
 | Coordinated get/put with N, R, W quorums | §4.5 | `echelon/coordinator.go` |
 | Sloppy quorum and hinted handoff | §4.6 | `coordinator.go`, `maintenance.go` |
 | Merkle-tree anti-entropy per key range | §4.7 | `merkle.go`, `maintenance.go` |
@@ -131,6 +131,7 @@ output on every run.
 | `echelon_basics.sern` | ring, preference lists, put/get, contexts, deletes |
 | `ring_balance.sern` | virtual-node balance; keys moved on join vs `hash % N` |
 | `divergence.sern` | partition → concurrent writes → siblings → semantic merge |
+| `gap.sern` | a read over an incomplete view, and the context that has to admit it |
 | `hinted_handoff.sern` | sloppy quorum stand-ins and hint delivery |
 | `anti_entropy.sern` | rebuilding a wiped node with Merkle trees |
 | `gossip.sern` | a join spreading through the cluster |

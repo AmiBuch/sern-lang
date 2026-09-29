@@ -1,0 +1,6 @@
+  node-2 holds ["B", "A"]
+  node-1 holds ["B"]
+  node-3 holds ["B", "A"]
+client sees: ["B"] | context <context {+node-2:2}>
+  gapped: true | dots: [{"node": "node-2", "counter": 2}]
+after healing: ["C", "A"] - A survived, B was superseded

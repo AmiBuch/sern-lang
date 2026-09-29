@@ -44,7 +44,7 @@ func (n *Node) nextCounter(key string, fromContext uint64) uint64 {
 		if v.Dot.Node == n.ID {
 			next = max(next, v.Dot.Counter)
 		}
-		next = max(next, v.Context.Get(n.ID))
+		next = max(next, v.Context.Max(n.ID))
 	}
 	next++
 	n.issued[key] = next

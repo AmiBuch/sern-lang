@@ -116,43 +116,55 @@ func configMap(cfg echelon.Config) object.Value {
 
 // ---- context values ----
 
-// contextValue wraps a vector clock. Sern code treats it as opaque: you get
-// one from get() and hand it back to put() so the new version descends
-// from everything you read.
-type contextValue struct{ clock echelon.VClock }
+// contextValue wraps a causal context. Sern code treats it as opaque: you get
+// one from get() and hand it back to put() so the new version descends from
+// everything you read — and only from what you read. The fields are for
+// inspection; there is no way to build one by hand.
+type contextValue struct{ ctx echelon.Context }
 
 func (*contextValue) TypeName() string { return "context" }
 func (c *contextValue) String() string {
-	if len(c.clock) == 0 {
-		return "<context {}>"
-	}
-	return "<context {" + c.clock.String() + "}>"
+	return "<context {" + c.ctx.String() + "}>"
 }
 func (c *contextValue) GetField(name string) (object.Value, bool) {
-	if name == "clock" {
+	switch name {
+	case "clock":
 		m := object.NewMap()
-		for _, e := range c.clock {
+		for _, e := range c.ctx.Clock {
 			m.SetStr(e.Node, object.Int(int64(e.Counter)))
 		}
 		return object.MapVal(m), true
+	case "dots":
+		// Writes seen past a gap. A node can appear more than once, so this is
+		// a list of {node, counter}, not a map.
+		out := make([]object.Value, 0, len(c.ctx.Dots))
+		for _, d := range c.ctx.Dots {
+			m := object.NewMap()
+			m.SetStr("node", object.Str(d.Node))
+			m.SetStr("counter", object.Int(int64(d.Counter)))
+			out = append(out, object.MapVal(m))
+		}
+		return object.ListOf(out), true
+	case "gapped":
+		return object.Bool(c.ctx.Gapped()), true
 	}
 	return object.Nil, false
 }
 
-func contextVal(v echelon.VClock) object.Value {
-	return object.NativeVal(&contextValue{clock: v})
+func contextVal(v echelon.Context) object.Value {
+	return object.NativeVal(&contextValue{ctx: v})
 }
 
-func wantContext(name string, a []object.Value, i int) (echelon.VClock, error) {
+func wantContext(name string, a []object.Value, i int) (echelon.Context, error) {
 	if i >= len(a) || a[i].K == object.KNil {
-		return nil, nil
+		return echelon.Context{}, nil
 	}
 	if a[i].K == object.KNative {
 		if c, ok := a[i].O.(*contextValue); ok {
-			return c.clock, nil
+			return c.ctx, nil
 		}
 	}
-	return nil, argErr(name, i, "a context (from get) or nil", a[i])
+	return echelon.Context{}, argErr(name, i, "a context (from get) or nil", a[i])
 }
 
 // ---- cluster handles ----
@@ -200,7 +212,7 @@ func (h *clusterHandle) writeResult(w echelon.WriteResult, err error) object.Val
 	m := object.NewMap()
 	m.SetStr("ok", object.Bool(err == nil))
 	m.SetStr("coordinator", object.Str(w.Coordinator))
-	m.SetStr("context", contextVal(w.Clock))
+	m.SetStr("context", contextVal(w.Context))
 	m.SetStr("acks", object.Int(int64(w.Acks)))
 	m.SetStr("replicas", strList(w.Replicas))
 	hints := object.NewMap()
@@ -237,7 +249,7 @@ func versionsList(vs []echelon.Version) (object.Value, error) {
 			}
 			m.SetStr("value", val)
 		}
-		m.SetStr("context", contextVal(v.FullClock()))
+		m.SetStr("context", contextVal(v.FullContext()))
 		m.SetStr("deleted", object.Bool(v.Deleted))
 		out = append(out, object.MapVal(m))
 	}

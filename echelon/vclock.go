@@ -45,6 +45,16 @@ func (v VClock) Get(node string) uint64 {
 	return 0
 }
 
+// stampOf returns node's Stamp (0 if absent). Used when a dot is folded into
+// the prefix, so truncation still sees the newer of the two times.
+func (v VClock) stampOf(node string) int64 {
+	i := sort.Search(len(v), func(i int) bool { return v[i].Node >= node })
+	if i < len(v) && v[i].Node == node {
+		return v[i].Stamp
+	}
+	return 0
+}
+
 // Clone returns an independent copy.
 func (v VClock) Clone() VClock { return append(VClock(nil), v...) }
 

@@ -11,7 +11,8 @@ import (
 type WriteResult struct {
 	Key         string
 	Coordinator string
-	Clock       VClock // the new version's clock (the next context)
+	Dot         ClockEntry // the dot this write was stamped with
+	Context     Context    // the new version's causal context (what to pass back)
 	Preference  []string
 	Replicas    []string          // preference-list nodes that stored it
 	Hints       map[string]string // fallback node -> node it stands in for
@@ -26,7 +27,7 @@ type ReadResult struct {
 	Preference  []string
 	Responded   []string  // replicas whose answers formed the result
 	Siblings    []Version // concurrent live versions ("worldlines")
-	Context     VClock    // merged clock to pass back on the next put
+	Context     Context   // union of what the answering replicas had seen
 	Found       bool
 	Repaired    []string // replicas fixed by read repair (Sync mode)
 	OK          bool
@@ -92,23 +93,23 @@ func (c *Cluster) route(key, via string) (*Node, []string, error) {
 }
 
 // Put writes value under key. ctx is the context returned by an earlier
-// Get (nil for a blind write); the new version's clock descends from it.
-func (c *Cluster) Put(key string, ctx VClock, value []byte) (WriteResult, error) {
+// Get (the zero Context for a blind write); the new version descends from it.
+func (c *Cluster) Put(key string, ctx Context, value []byte) (WriteResult, error) {
 	return c.write(key, ctx, value, false, "")
 }
 
 // Delete writes a tombstone for key.
-func (c *Cluster) Delete(key string, ctx VClock) (WriteResult, error) {
+func (c *Cluster) Delete(key string, ctx Context) (WriteResult, error) {
 	return c.write(key, ctx, nil, true, "")
 }
 
 // PutVia is Put with the request sent to a specific node.
-func (c *Cluster) PutVia(via, key string, ctx VClock, value []byte) (WriteResult, error) {
+func (c *Cluster) PutVia(via, key string, ctx Context, value []byte) (WriteResult, error) {
 	return c.write(key, ctx, value, false, via)
 }
 
 // DeleteVia is Delete with the request sent to a specific node.
-func (c *Cluster) DeleteVia(via, key string, ctx VClock) (WriteResult, error) {
+func (c *Cluster) DeleteVia(via, key string, ctx Context) (WriteResult, error) {
 	return c.write(key, ctx, nil, true, via)
 }
 
@@ -117,7 +118,7 @@ type ack struct {
 	hintFor string
 }
 
-func (c *Cluster) write(key string, ctx VClock, value []byte, deleted bool, via string) (WriteResult, error) {
+func (c *Cluster) write(key string, ctx Context, value []byte, deleted bool, via string) (WriteResult, error) {
 	c.Stats.Puts.Add(1)
 	coord, walk, err := c.route(key, via)
 	if err != nil {
@@ -128,7 +129,7 @@ func (c *Cluster) write(key string, ctx VClock, value []byte, deleted bool, via 
 	// ever share one. The dot is kept beside the client's context rather than
 	// folded into it, which is what lets two writes made from the same context
 	// through this same coordinator survive as siblings.
-	dot := ClockEntry{Node: coord.ID, Counter: coord.nextCounter(key, ctx.Get(coord.ID)), Stamp: c.stamp.Add(1)}
+	dot := ClockEntry{Node: coord.ID, Counter: coord.nextCounter(key, ctx.Max(coord.ID)), Stamp: c.stamp.Add(1)}
 	ver := Version{Value: value, Dot: dot, Context: ctx.Truncate(c.cfg.ClockLimit), Deleted: deleted}
 	n := min(c.cfg.N, len(walk))
 	top, fallbacks := walk[:n], walk[n:]
@@ -173,7 +174,7 @@ func (c *Cluster) write(key string, ctx VClock, value []byte, deleted bool, via 
 		}
 	}()
 
-	res := WriteResult{Key: key, Coordinator: coord.ID, Clock: ver.FullClock(), Preference: append([]string(nil), top...), Hints: map[string]string{}}
+	res := WriteResult{Key: key, Coordinator: coord.ID, Dot: dot, Context: ver.FullContext(), Preference: append([]string(nil), top...), Hints: map[string]string{}}
 	for a := range acks {
 		res.Acks++
 		if a.hintFor != "" {
@@ -280,7 +281,7 @@ func (c *Cluster) GetVia(via, key string) (ReadResult, error) {
 	}
 	versions := Reconcile(all)
 	for _, v := range versions {
-		res.Context = Merge(res.Context, v.FullClock())
+		res.Context = MergeContexts(res.Context, v.FullContext())
 		if !v.Deleted {
 			res.Siblings = append(res.Siblings, v)
 		}

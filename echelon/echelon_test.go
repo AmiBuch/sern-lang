@@ -2,6 +2,8 @@ package echelon
 
 import (
 	"fmt"
+	"math/rand"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,8 +54,8 @@ func TestVClockTruncate(t *testing.T) {
 func TestReconcileDropsAncestors(t *testing.T) {
 	// b and c both descend from a, and from nothing of each other's.
 	a := Version{Value: []byte("a"), Dot: ClockEntry{Node: "x", Counter: 1}}
-	b := Version{Value: []byte("b"), Dot: ClockEntry{Node: "x", Counter: 2}, Context: a.FullClock()}
-	c := Version{Value: []byte("c"), Dot: ClockEntry{Node: "y", Counter: 1}, Context: a.FullClock()}
+	b := Version{Value: []byte("b"), Dot: ClockEntry{Node: "x", Counter: 2}, Context: a.FullContext()}
+	c := Version{Value: []byte("c"), Dot: ClockEntry{Node: "y", Counter: 1}, Context: a.FullContext()}
 	got := Reconcile([]Version{a, b, c, b})
 	if len(got) != 2 {
 		t.Fatalf("want 2 concurrent siblings, got %d", len(got))
@@ -93,7 +95,7 @@ func TestRingPreferenceAndBalance(t *testing.T) {
 
 func TestPutGet(t *testing.T) {
 	c := mustCluster(t, nil)
-	w, err := c.Put("mayuri", nil, []byte("tuturu"))
+	w, err := c.Put("mayuri", Context{}, []byte("tuturu"))
 	if err != nil || w.Acks != 3 {
 		t.Fatalf("put: %v acks=%d", err, w.Acks)
 	}
@@ -121,7 +123,7 @@ func TestConcurrentWritesCreateSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Put("cart", nil, []byte("banana"))
+	c.Put("cart", Context{}, []byte("banana"))
 	r, _ := c.Get("cart")
 
 	wa, err := c.PutVia(pl[0], "cart", r.Context, []byte("banana+upa"))
@@ -167,7 +169,7 @@ func TestNoLostWritesUnderRandomRouting(t *testing.T) {
 	lost, sameCoord := 0, 0
 	for i := 0; i < 300; i++ {
 		key := fmt.Sprintf("cart-%d", i)
-		if _, err := c.Put(key, nil, []byte("v0")); err != nil {
+		if _, err := c.Put(key, Context{}, []byte("v0")); err != nil {
 			t.Fatal(err)
 		}
 		r, err := c.Get(key)
@@ -211,7 +213,7 @@ func TestTruncatedContextNeverLosesWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Put("k", nil, []byte("v0"))
+	c.Put("k", Context{}, []byte("v0"))
 	for i := 0; i < 6; i++ {
 		r, err := c.Get("k")
 		if err != nil {
@@ -233,15 +235,15 @@ func TestTruncatedContextNeverLosesWrites(t *testing.T) {
 		if v.Dot.Counter == 0 {
 			t.Fatalf("version %q has no dot", v.Value)
 		}
-		if v.FullClock().Get(v.Dot.Node) != v.Dot.Counter {
-			t.Fatalf("version %q: dot %v missing from its own clock %v", v.Value, v.Dot, v.FullClock())
+		if !v.FullContext().Covers(v.Dot) {
+			t.Fatalf("version %q: dot %v missing from its own context %v", v.Value, v.Dot, v.FullContext())
 		}
 	}
 }
 
 func TestPartitionDivergenceAndMerge(t *testing.T) {
 	c := mustCluster(t, func(cfg *Config) { cfg.Nodes = 3; cfg.W = 1; cfg.R = 1 })
-	c.Put("k", nil, []byte("v0"))
+	c.Put("k", Context{}, []byte("v0"))
 	r, _ := c.Get("k")
 	c.Partition([][]string{{"node-1"}, {"node-2", "node-3"}})
 	// Force writes on both sides by crashing the other side's entry points.
@@ -270,7 +272,7 @@ func TestHintedHandoff(t *testing.T) {
 	pl, _ := c.PreferenceList("kurisu")
 	victim := pl[len(pl)-1]
 	c.Crash(victim)
-	w, err := c.Put("kurisu", nil, []byte("christina"))
+	w, err := c.Put("kurisu", Context{}, []byte("christina"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +300,7 @@ func TestQuorumFailure(t *testing.T) {
 	c := mustCluster(t, func(cfg *Config) { cfg.Nodes = 3 })
 	c.Crash("node-2")
 	c.Crash("node-3")
-	if _, err := c.Put("x", nil, []byte("1")); err == nil {
+	if _, err := c.Put("x", Context{}, []byte("1")); err == nil {
 		t.Fatal("W=2 with one live node must fail")
 	}
 }
@@ -306,7 +308,7 @@ func TestQuorumFailure(t *testing.T) {
 func TestAntiEntropyRestoresWipedNode(t *testing.T) {
 	c := mustCluster(t, nil)
 	for i := 0; i < 100; i++ {
-		c.Put(fmt.Sprint("key-", i), nil, []byte{byte(i)})
+		c.Put(fmt.Sprint("key-", i), Context{}, []byte{byte(i)})
 	}
 	before, _ := c.Keys("node-2")
 	c.Wipe("node-2")
@@ -324,7 +326,7 @@ func TestAntiEntropyRestoresWipedNode(t *testing.T) {
 
 func TestReadRepair(t *testing.T) {
 	c := mustCluster(t, nil)
-	c.Put("rintaro", nil, []byte("hououin"))
+	c.Put("rintaro", Context{}, []byte("hououin"))
 	pl, _ := c.PreferenceList("rintaro")
 	c.Wipe(pl[0])
 	r, _ := c.Get("rintaro")
@@ -371,7 +373,7 @@ func TestAsyncModeWithLatency(t *testing.T) {
 		cfg.LatencyMax = 2 * time.Millisecond
 	})
 	for i := 0; i < 50; i++ {
-		if _, err := c.Put(fmt.Sprint("k", i), nil, []byte("v")); err != nil {
+		if _, err := c.Put(fmt.Sprint("k", i), Context{}, []byte("v")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -393,5 +395,313 @@ func TestMerkleLeavesSpread(t *testing.T) {
 	}
 	if len(used) < 12 {
 		t.Fatalf("64 similar keys used only %d of 16 leaves", len(used))
+	}
+}
+
+// ---- causal contexts: gaps, and what must never fill them ----
+
+func dot(node string, ctr uint64) ClockEntry {
+	return ClockEntry{Node: node, Counter: ctr, Stamp: int64(ctr)}
+}
+
+func values(vs []Version) string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		out[i] = string(v.Value)
+	}
+	return "[" + strings.Join(out, " ") + "]"
+}
+
+// A context has to distinguish "everything up to 2" from "2, but not 1". A
+// vector clock cannot, which is the whole reason Context exists.
+func TestContextKeepsGapsAndFoldsThem(t *testing.T) {
+	c := Context{}.Add(dot("n", 2))
+	if !c.Gapped() {
+		t.Fatalf("a lone dot n:2 sits past a gap: %v", c)
+	}
+	if c.Covers(dot("n", 1)) {
+		t.Fatalf("n:2 must not claim n:1: %v", c)
+	}
+	if !c.Covers(dot("n", 2)) {
+		t.Fatalf("context must cover its own dot: %v", c)
+	}
+	if got := c.String(); got != "+n:2" {
+		t.Fatalf("String() = %q, want %q", got, "+n:2")
+	}
+
+	// Filling the gap folds the dot into the prefix: nothing stays loose, so a
+	// healthy context is exactly as compact as the old vector clock.
+	c = c.Add(dot("n", 1))
+	if c.Gapped() || !c.Covers(dot("n", 1)) || !c.Covers(dot("n", 2)) {
+		t.Fatalf("n:1 plus n:2 should compact to a plain clock: %v", c)
+	}
+	if got := c.String(); got != "n:2" {
+		t.Fatalf("String() = %q, want %q", got, "n:2")
+	}
+
+	// Merging closes a gap from the other side, and is idempotent.
+	a := Context{}.Add(dot("n", 3))
+	b := Context{}.Add(dot("n", 1)).Add(dot("n", 2))
+	if m := MergeContexts(a, b); m.Gapped() || m.String() != "n:3" {
+		t.Fatalf("merge should close the gap: %v", m)
+	}
+	if x := MergeContexts(a, a); x.String() != a.String() {
+		t.Fatalf("merge is not idempotent: %v vs %v", x, a)
+	}
+}
+
+// Truncation may only ever *lower* coverage. The cost is a version that survives
+// as a sibling when it could have been superseded, never a version dropped when
+// it should have survived: truncation cannot lose a write.
+func TestContextTruncateOnlyLowersCoverage(t *testing.T) {
+	var full Context
+	for i := 1; i <= 6; i++ {
+		full = full.Add(ClockEntry{Node: fmt.Sprintf("n%d", i), Counter: 1, Stamp: int64(i)})
+	}
+	full = full.Add(ClockEntry{Node: "n1", Counter: 9, Stamp: 99}) // loose dot
+	if !full.Gapped() {
+		t.Fatalf("expected a loose dot: %v", full)
+	}
+	cut := full.Truncate(3)
+	if n := len(cut.Clock) + len(cut.Dots); n > 3 {
+		t.Fatalf("truncate kept %d entries, want at most 3: %v", n, cut)
+	}
+	if !full.Includes(cut) {
+		t.Fatalf("truncated context %v is not contained in %v", cut, full)
+	}
+	for i := 1; i <= 6; i++ {
+		for _, ctr := range []uint64{1, 9} {
+			e := ClockEntry{Node: fmt.Sprintf("n%d", i), Counter: ctr}
+			if cut.Covers(e) && !full.Covers(e) {
+				t.Fatalf("truncation invented coverage of %v", e)
+			}
+		}
+	}
+}
+
+// A client reads from a replica that missed one of two concurrent writes. Its
+// context must record "I saw B, across a gap where A should be" — otherwise its
+// next put supersedes A, a version nobody ever read.
+//
+// The paper's mechanism cannot express that: §4.4 makes the context a vector
+// clock and orders versions with a pointwise <=, so {node:2} silently asserts
+// node:1. Before gap-aware contexts this test's final read returned ["C"] and A
+// was gone. Dots alone (B15) do not reach it, because the gap is destroyed when
+// the read path flattens the siblings into one clock.
+func TestGapContextKeepsUnseenWrite(t *testing.T) {
+	c := mustCluster(t, func(cfg *Config) { cfg.Nodes = 3; cfg.N = 3; cfg.R = 1; cfg.W = 1 })
+	pl, err := c.PreferenceList("k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	coord, lagging, other := pl[0], pl[1], pl[2]
+
+	c.Partition([][]string{{coord, other}, {lagging}})
+	if _, err := c.PutVia(coord, "k", Context{}, []byte("A")); err != nil {
+		t.Fatal(err)
+	}
+	c.Heal()
+	if _, err := c.PutVia(coord, "k", Context{}, []byte("B")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The client can only reach the replica that never received A.
+	c.Partition([][]string{{lagging}, {coord, other}})
+	r, err := c.GetVia(lagging, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Siblings) != 1 || string(r.Siblings[0].Value) != "B" {
+		t.Fatalf("the lagging replica should hold B alone, got %s", values(r.Siblings))
+	}
+	if !r.Context.Gapped() {
+		t.Fatalf("a client that saw only B must carry the gap, got %v", r.Context)
+	}
+	if _, err := c.PutVia(lagging, "k", r.Context, []byte("C")); err != nil {
+		t.Fatal(err)
+	}
+
+	c.Heal()
+	c.AntiEntropy()
+	got, err := c.Get("k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"A": true, "C": true}
+	if len(got.Siblings) != len(want) {
+		t.Fatalf("want A and C, got %s", values(got.Siblings))
+	}
+	for _, v := range got.Siblings {
+		if !want[string(v.Value)] {
+			t.Fatalf("unexpected sibling %q, want A and C: %s", v.Value, values(got.Siblings))
+		}
+	}
+}
+
+// The property the gap bug violated, stated end to end: a version is only ever
+// dropped when some write that *actually saw it* superseded it.
+//
+// The model tracks concrete dots — (node, counter) pairs read straight off the
+// stored versions — and never consults a Context. An earlier version of this
+// test compared the returned context against one rebuilt with MergeContexts,
+// which passed happily under the flattened contexts it was meant to catch: both
+// sides made the same mistake. Ground truth has to come from outside the type
+// under test.
+func TestNoVersionDroppedUnobserved(t *testing.T) {
+	c := mustCluster(t, func(cfg *Config) { cfg.Nodes = 5; cfg.N = 3; cfg.R = 1; cfg.W = 1 })
+	rng := rand.New(rand.NewSource(9))
+	var key string
+
+	// live is every version anywhere in the cluster, by dot. It unions across
+	// all replicas, so a dot missing from it has genuinely been reconciled away
+	// rather than merely not replicated yet.
+	live := func(key string) map[string]string {
+		out := map[string]string{}
+		for _, id := range c.NodeIDs() {
+			vs, _, err := c.Inspect(id, key)
+			if err != nil {
+				continue
+			}
+			for _, v := range vs {
+				out[dotID(key, v.Dot)] = string(v.Value)
+			}
+		}
+		return out
+	}
+
+	// saw[d] is every dot the author of write d had actually observed.
+	saw := map[string]map[string]bool{}
+	keys := []string{"cart", "list", "notes", "plan"}
+	for i := 0; i < 400; i++ {
+		key = keys[rng.Intn(len(keys))]
+		pl, err := c.PreferenceList(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Hide a single replica from this round's write about half the time. That
+		// is what leaves one replica behind on a coordinator's dot sequence,
+		// which is the precondition for a gap.
+		if rng.Intn(2) == 0 {
+			hidden := pl[1+rng.Intn(len(pl)-1)]
+			var rest []string
+			for _, id := range c.NodeIDs() {
+				if id != hidden {
+					rest = append(rest, id)
+				}
+			}
+			c.Partition([][]string{rest, {hidden}})
+		} else {
+			c.Heal()
+		}
+
+		// Blind writes matter here: two of them through one coordinator are
+		// concurrent, so a replica missing the earlier one has a real gap rather
+		// than merely stale data.
+		observed := map[string]bool{}
+		ctx := Context{}
+		if rng.Intn(2) == 0 {
+			via := pl[rng.Intn(len(pl))]
+			if r, err := c.GetVia(via, key); err == nil {
+				ctx = r.Context
+				for _, v := range r.Siblings {
+					observed[dotID(key, v.Dot)] = true
+					for d := range saw[dotID(key, v.Dot)] {
+						observed[d] = true
+					}
+				}
+			}
+		}
+		val := fmt.Sprintf("%s-v%d", key, i)
+		// Record the dot even when the quorum fails: a failed put still stores
+		// its version on whatever replica it reached, so that version exists and
+		// has to be accounted for.
+		w, _ := c.PutVia(pl[rng.Intn(len(pl))], key, ctx, []byte(val))
+		if w.Dot.Counter > 0 {
+			saw[dotID(key, w.Dot)] = observed
+		}
+	}
+
+	c.Heal()
+	c.Settle()
+	for i := 0; i < 3; i++ {
+		c.Tick()
+	}
+	final := map[string]string{}
+	for _, k := range keys {
+		for d, v := range live(k) {
+			final[d] = v
+		}
+	}
+	for d := range saw {
+		if _, still := final[d]; still {
+			continue
+		}
+		justified := false
+		for l := range final {
+			if saw[l][d] {
+				justified = true
+				break
+			}
+		}
+		if !justified {
+			t.Fatalf("version %s was dropped, but no surviving write had ever seen it (survivors: %v)", d, final)
+		}
+	}
+	if len(saw) < 50 {
+		t.Fatalf("only %d writes tracked; the test is no longer exercising much", len(saw))
+	}
+}
+
+// dotID names a dot. A dot is only unique *within* a key — each node keeps a
+// separate counter per key — so the key belongs in the identity.
+func dotID(key string, d ClockEntry) string {
+	return fmt.Sprintf("%s/%s:%d", key, d.Node, d.Counter)
+}
+
+// Every gap comes from *delivery*, never from numbering: a coordinator's dots
+// for a key are contiguous, because nextCounter only ever advances by one within
+// its own counter space. That is what keeps the loose-dot list short, and it is
+// implicit in nextCounter, so pin it.
+func TestCoordinatorDotsAreGapless(t *testing.T) {
+	c := mustCluster(t, func(cfg *Config) { cfg.Nodes = 5; cfg.N = 3; cfg.R = 1; cfg.W = 1 })
+	rng := rand.New(rand.NewSource(4))
+	pl, err := c.PreferenceList("k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinated := map[string]uint64{}
+	for i := 0; i < 80; i++ {
+		via := pl[rng.Intn(len(pl))]
+		ctx := Context{}
+		if rng.Intn(3) > 0 { // mix blind writes in with read-modify-writes
+			if r, err := c.GetVia(via, "k"); err == nil {
+				ctx = r.Context
+			}
+		}
+		if w, _ := c.PutVia(via, "k", ctx, []byte(fmt.Sprintf("v%d", i))); w.Coordinator != "" {
+			coordinated[w.Coordinator]++
+		}
+		if rng.Intn(4) == 0 {
+			c.Partition([][]string{{pl[0]}, {pl[1], pl[2]}})
+		} else {
+			c.Heal()
+		}
+	}
+	c.Heal()
+	c.Settle()
+	if len(coordinated) < 2 {
+		t.Fatalf("only %d coordinators took part; the test is not exercising much", len(coordinated))
+	}
+	for id, count := range coordinated {
+		n, err := c.node(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.mu.Lock()
+		issued := n.issued["k"]
+		n.mu.Unlock()
+		if issued != count {
+			t.Fatalf("%s coordinated %d writes but its counter reached %d: dots are not contiguous", id, count, issued)
+		}
 	}
 }

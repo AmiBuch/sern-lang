@@ -1,0 +1,43 @@
+// gap.sern — a context has to be able to say "node-2:2 but not node-2:1".
+//
+// Two blind writes, A then B, go through one coordinator. Neither client had
+// read the other, so they are concurrent and both are live. One replica misses A.
+//
+// A client that can only reach that replica sees B alone, and its context has to
+// record exactly that: B, across a gap where A should be. A plain vector clock
+// cannot say it — {node-2:2} claims everything up to 2, A included — so the
+// client's next write would bury a version nobody ever read. ECHELON keeps the
+// gap by carrying the loose dot beside the clock, printed with a "+".
+
+labmem db = echelon.cluster({nodes: 3, n: 3, r: 1, w: 1, seed: 13})
+labmem key = "worldline"
+
+labmem pl = db.preference(key)
+labmem coord = pl[0]          // coordinates both writes
+labmem lagging = pl[1]        // misses A
+labmem other = pl[2]
+
+db.partition([coord, other], [lagging])
+db.via(coord).put(key, "A")                  // cannot reach the lagging replica
+db.heal()
+db.via(coord).put(key, "B")                  // reaches everyone
+
+// inspect() reads a replica's disk directly, so unlike get() it doesn't trigger
+// read repair and heal the very gap we want to look at.
+reading n in pl {
+    labmem held = []
+    reading v in db.inspect(n, key).versions { push(held, v.value) }
+    print(fmt("  {} holds {}", n, held))
+}
+
+// A client that can only reach the replica which missed A.
+db.partition([lagging], [coord, other])
+labmem stale = db.via(lagging).get(key)
+print("client sees:", stale.worldlines, "| context", stale.context)
+print("  gapped:", stale.context.gapped, "| dots:", stale.context.dots)
+
+db.via(lagging).put(key, "C", stale.context)  // meant to replace B, and only B
+
+db.heal()
+db.antientropy()
+print("after healing:", db.get(key).worldlines, "- A survived, B was superseded")
